@@ -16,6 +16,7 @@ void setup() {
 
   Serial.println("Speech Synthesizer Ready.");
   Serial.println("Waiting for UART input from ESP32-CAM...");
+  Serial.println("Type text in Serial Monitor and press Enter to speak it.");
 
   // Test voice output locally on start up.
   voice.say(sp2_READY);
@@ -85,6 +86,21 @@ void loop() {
       Serial.println(sentence);
 
       processAndSpeakSentence(sentence);
+      Serial.println("=========================================");
+    }
+  }
+
+  // Also accept manual input directly from the USB Serial Monitor.
+  if (Serial.available()) {
+    String serialInput = Serial.readStringUntil('\n');
+    serialInput.trim();
+
+    if (serialInput.length() > 0) {
+      Serial.println("=========================================");
+      Serial.print("Received sentence from Serial Monitor: ");
+      Serial.println(serialInput);
+
+      processAndSpeakSentence(serialInput);
       Serial.println("=========================================");
     }
   }
