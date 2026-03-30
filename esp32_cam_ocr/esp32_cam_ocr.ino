@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "esp_camera.h"
 
@@ -34,13 +33,16 @@ const char* ocr_api_key = "YOUR_API_KEY"; // OCR.space API Key
 // ===========================
 // UART Setup (To Speech Controller)
 // ===========================
-#define RXD2 15 // Not used by us, but required to init Serial
 #define TXD2 14 // Connect to RX (GPIO 16) on ESP32 Dev Module
 HardwareSerial SerialTalkie(2); 
 
 // Global variables
 unsigned long lastCaptureTime = 0;
 const unsigned long captureInterval = 10000; // 10 seconds
+unsigned long wifiReconnectAttempts = 0;
+unsigned long nextWifiRetryAt = 0;
+const unsigned long wifiRetryBaseMs = 10000;   // 10 seconds
+const unsigned long wifiRetryMaxMs = 120000;   // 2 minutes
 
 void setupCamera() {
   camera_config_t config;
@@ -86,7 +88,7 @@ void setupCamera() {
 
 void setup() {
   Serial.begin(115200);
-  SerialTalkie.begin(115200, SERIAL_8N1, RXD2, TXD2);
+  SerialTalkie.begin(115200, SERIAL_8N1, -1, TXD2);
 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to Wi-Fi");
@@ -116,33 +118,45 @@ void captureAndSendImage() {
     return;
   }
 
-  String boundary = "Esp32CamBoundary";
-  String head = "--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"apikey\"\r\n\r\n" +
-                String(ocr_api_key) + "\r\n" +
-                "--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"language\"\r\n\r\n" +
-                "eng\r\n" +
-                "--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"isOverlayRequired\"\r\n\r\n" +
-                "false\r\n" +
-                "--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"file\"; filename=\"image.jpg\"\r\n" +
-                "Content-Type: image/jpeg\r\n\r\n";
-  String tail = "\r\n--" + boundary + "--\r\n";
+  const char* boundary = "Esp32CamBoundary";
+  const char* partApiKeyPreamble =
+      "--Esp32CamBoundary\r\n"
+      "Content-Disposition: form-data; name=\"apikey\"\r\n\r\n";
+  const char* partLanguage =
+      "\r\n--Esp32CamBoundary\r\n"
+      "Content-Disposition: form-data; name=\"language\"\r\n\r\n"
+      "eng\r\n";
+  const char* partOverlay =
+      "--Esp32CamBoundary\r\n"
+      "Content-Disposition: form-data; name=\"isOverlayRequired\"\r\n\r\n"
+      "false\r\n";
+  const char* partFilePreamble =
+      "--Esp32CamBoundary\r\n"
+      "Content-Disposition: form-data; name=\"file\"; filename=\"image.jpg\"\r\n"
+      "Content-Type: image/jpeg\r\n\r\n";
+  const char* partFileTail = "\r\n--Esp32CamBoundary--\r\n";
 
-  uint32_t contentLength = head.length() + fb->len + tail.length();
+  const uint32_t contentLength =
+      strlen(partApiKeyPreamble) + strlen(ocr_api_key) +
+      strlen(partLanguage) + strlen(partOverlay) +
+      strlen(partFilePreamble) + fb->len + strlen(partFileTail);
 
-  String request = "POST /parse/image HTTP/1.1\r\n";
-  request += "Host: api.ocr.space\r\n";
-  request += "Content-Length: " + String(contentLength) + "\r\n";
-  request += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
-  request += "Connection: close\r\n\r\n";
+  client.print("POST /parse/image HTTP/1.0\r\n");
+  client.print("Host: api.ocr.space\r\n");
+  client.print("Content-Length: ");
+  client.print(contentLength);
+  client.print("\r\n");
+  client.print("Content-Type: multipart/form-data; boundary=");
+  client.print(boundary);
+  client.print("\r\n");
+  client.print("Connection: close\r\n\r\n");
 
-  // Send request header
-  client.print(request);
-  // Send multipart head
-  client.print(head);
+  // Send multipart body in pieces to reduce heap churn
+  client.print(partApiKeyPreamble);
+  client.print(ocr_api_key);
+  client.print(partLanguage);
+  client.print(partOverlay);
+  client.print(partFilePreamble);
   
   // Send image data (chunked to avoid watchdog resets and huge memory allocation)
   uint8_t *fb_buf = fb->buf;
@@ -154,7 +168,7 @@ void captureAndSendImage() {
   }
   
   // Send multipart tail
-  client.print(tail);
+  client.print(partFileTail);
 
   // Read response
   unsigned long timeout = millis();
@@ -168,25 +182,28 @@ void captureAndSendImage() {
     delay(10);
   }
 
-  // Parse Body
-  bool isBody = false;
-  String jsonResponse = "";
-  while (client.available()) {
-    String line = client.readStringUntil('\n');
-    if (!isBody && line == "\r") {
-      isBody = true;
-      continue;
+  // Read full response then split headers/body by CRLF CRLF
+  String rawResponse;
+  while (client.connected() || client.available()) {
+    while (client.available()) {
+      rawResponse += (char)client.read();
     }
-    if (isBody) {
-      jsonResponse += line;
-    }
+    delay(1);
   }
   client.stop();
   esp_camera_fb_return(fb); // CRITICAL: Free the buffer to prevent memory leaks!
 
+  int bodyStart = rawResponse.indexOf("\r\n\r\n");
+  String jsonResponse = (bodyStart >= 0) ? rawResponse.substring(bodyStart + 4) : "";
+
   // Process JSON
   if (jsonResponse.length() > 0) {
-    DynamicJsonDocument doc(2048);
+    if (ESP.getFreeHeap() < 20000) {
+      Serial.println("Not enough heap for OCR JSON parsing.");
+      return;
+    }
+
+    DynamicJsonDocument doc(8192);
     DeserializationError error = deserializeJson(doc, jsonResponse);
 
     if (error) {
@@ -222,17 +239,28 @@ void captureAndSendImage() {
 
 void loop() {
   if (millis() - lastCaptureTime >= captureInterval) {
-    lastCaptureTime = millis();
-
     // Ensure Wi-Fi is still connected
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("Wi-Fi disconnected. Reconnecting...");
-      WiFi.disconnect();
-      WiFi.begin(ssid, password);
+      unsigned long now = millis();
+      if (now >= nextWifiRetryAt) {
+        unsigned long retryDelay = wifiRetryBaseMs << (wifiReconnectAttempts > 4 ? 4 : wifiReconnectAttempts);
+        if (retryDelay > wifiRetryMaxMs) {
+          retryDelay = wifiRetryMaxMs;
+        }
+
+        Serial.printf("Wi-Fi disconnected. Reconnect attempt #%lu\n", wifiReconnectAttempts + 1);
+        WiFi.disconnect();
+        WiFi.begin(ssid, password);
+        wifiReconnectAttempts++;
+        nextWifiRetryAt = now + retryDelay;
+      }
       return;
     }
 
     captureAndSendImage();
+    lastCaptureTime = millis(); // Count interval after attempt finishes
+    wifiReconnectAttempts = 0;
+    nextWifiRetryAt = 0;
     
     // Check free heap to prevent fragmentation issues over time
     if (ESP.getFreeHeap() < 20000) {
