@@ -7,7 +7,7 @@
 // ===========================
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
-const char* ocr_api_key = "YOUR_API_KEY"; // OCR.space API Key
+const char* ocr_api_key = "K89544070388957"; // OCR.space API Key
 
 // ===========================
 // Camera Configuration 
