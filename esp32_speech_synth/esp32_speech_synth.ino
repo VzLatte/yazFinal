@@ -17,9 +17,9 @@ void setup() {
   Serial.println("Speech Synthesizer Ready.");
   Serial.println("Waiting for UART input from ESP32-CAM...");
 
-  // Test voice output locally on start up
-  voice.say(spc_SYSTEM);
-  voice.say(spc_READY);
+  // Test voice output locally on start up.
+  voice.say(sp2_READY);
+  voice.say(sp2_ALERT);
 }
 
 void processAndSpeakSentence(const String &sentence) {
@@ -27,37 +27,57 @@ void processAndSpeakSentence(const String &sentence) {
     Serial.println("Error: Sentence too long to process (max 255 chars).");
     return;
   }
-  // Convert to lowercase or uppercase if necessary.
-  // We'll leave it as is and handle matching dynamically in TalkieDict.
 
-  // strtok requires a mutable char array
+  // strtok requires a mutable char array.
   char sentenceArray[256];
   sentence.toCharArray(sentenceArray, sizeof(sentenceArray));
 
-  // Tokenize using space and common punctuation as delimiters
+  // Collect tokens first so we can match two-word phrases from the vocabulary.
+  String tokens[128];
+  int tokenCount = 0;
+
   char *wordToken = strtok(sentenceArray, " \t.,!;?\"'");
+  while (wordToken != NULL && tokenCount < 128) {
+    tokens[tokenCount++] = String(wordToken);
+    wordToken = strtok(NULL, " \t.,!;?\"'");
+  }
 
-  while (wordToken != NULL) {
-    String wordStr = String(wordToken);
+  int i = 0;
+  while (i < tokenCount) {
+    String current = tokens[i];
+    current.toLowerCase();
 
-    if (wordStr.length() > 0) {
-      Serial.print("Speaking word: ");
-      Serial.println(wordStr);
-      speakWord(voice, wordStr);
+    bool spokePhrase = false;
+    if (i + 1 < tokenCount) {
+      String next = tokens[i + 1];
+      next.toLowerCase();
+      String twoWord = current + " " + next;
+      const uint8_t *phraseSound = findPhraseSound(twoWord);
+      if (phraseSound != nullptr) {
+        Serial.print("Speaking phrase: ");
+        Serial.println(twoWord);
+        voice.say(phraseSound);
+        delay(50);
+        i += 2;
+        spokePhrase = true;
+      }
     }
 
-    // Tiny pause between words for clarity
-    delay(50);
-
-    wordToken = strtok(NULL, " \t.,!;?\"'");
+    if (!spokePhrase) {
+      Serial.print("Speaking word: ");
+      Serial.println(current);
+      speakWord(voice, current);
+      delay(50);
+      i += 1;
+    }
   }
 }
 
 void loop() {
-  // Buffer the incoming sentence until \n
+  // Buffer the incoming sentence until \n.
   if (SerialCam.available()) {
     String sentence = SerialCam.readStringUntil('\n');
-    sentence.trim(); // Remove trailing \r or spaces
+    sentence.trim(); // Remove trailing \r or spaces.
 
     if (sentence.length() > 0) {
       Serial.println("=========================================");
