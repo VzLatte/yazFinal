@@ -182,58 +182,53 @@ void captureAndSendImage() {
     delay(10);
   }
 
-  // Read full response then split headers/body by CRLF CRLF
-  String rawResponse;
+  // Skip HTTP headers
   while (client.connected() || client.available()) {
-    while (client.available()) {
-      rawResponse += (char)client.read();
-    }
-    delay(1);
+    String line = client.readStringUntil('\n');
+    if (line == "\r") break;
   }
+
+  // Check heap before allocating
+  if (ESP.getFreeHeap() < 20000) {
+    Serial.println("Not enough heap for JSON parsing.");
+    client.stop();
+    esp_camera_fb_return(fb);
+    return;
+  }
+
+  // Stream body directly into parser — no intermediate String
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, client);
   client.stop();
-  esp_camera_fb_return(fb); // CRITICAL: Free the buffer to prevent memory leaks!
+  esp_camera_fb_return(fb);
 
-  int bodyStart = rawResponse.indexOf("\r\n\r\n");
-  String jsonResponse = (bodyStart >= 0) ? rawResponse.substring(bodyStart + 4) : "";
+  if (error) {
+    Serial.print("JSON parsing failed: ");
+    Serial.println(error.c_str());
+    return;
+  }
 
-  // Process JSON
-  if (jsonResponse.length() > 0) {
-    if (ESP.getFreeHeap() < 20000) {
-      Serial.println("Not enough heap for OCR JSON parsing.");
-      return;
-    }
+  // OCR.space response structure
+  JsonArray parsedResults = doc["ParsedResults"];
+  if (!parsedResults.isNull() && parsedResults.size() > 0) {
+    String parsedText = parsedResults[0]["ParsedText"].as<String>();
 
-    DynamicJsonDocument doc(8192);
-    DeserializationError error = deserializeJson(doc, jsonResponse);
+    // Clean text (remove newlines and excess spaces)
+    parsedText.replace("\r", " ");
+    parsedText.replace("\n", " ");
+    parsedText.trim();
 
-    if (error) {
-      Serial.print("JSON parsing failed: ");
-      Serial.println(error.c_str());
-      return;
-    }
+    if (parsedText.length() > 0) {
+      Serial.print("OCR Result: ");
+      Serial.println(parsedText);
 
-    // OCR.space response structure
-    JsonArray parsedResults = doc["ParsedResults"];
-    if (!parsedResults.isNull() && parsedResults.size() > 0) {
-      String parsedText = parsedResults[0]["ParsedText"].as<String>();
-      
-      // Clean text (remove newlines and excess spaces)
-      parsedText.replace("\r", " ");
-      parsedText.replace("\n", " ");
-      parsedText.trim();
-
-      if (parsedText.length() > 0) {
-        Serial.print("OCR Result: ");
-        Serial.println(parsedText);
-        
-        // Transmit over UART to the ESP32 Dev module
-        SerialTalkie.println(parsedText);
-      } else {
-        Serial.println("No text found in image.");
-      }
+      // Transmit over UART to the ESP32 Dev module
+      SerialTalkie.println(parsedText);
     } else {
-       Serial.println("Error or no results from OCR API.");
+      Serial.println("No text found in image.");
     }
+  } else {
+    Serial.println("Error or no results from OCR API.");
   }
 }
 
