@@ -185,7 +185,8 @@ void captureAndSendImage() {
   // Skip HTTP headers
   while (client.connected() || client.available()) {
     String line = client.readStringUntil('\n');
-    if (line == "\r") break;
+    line.trim(); // strip \r
+    if (line.length() == 0) break; // blank line = end of headers
   }
 
   // Check heap before allocating
