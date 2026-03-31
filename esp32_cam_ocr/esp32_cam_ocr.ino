@@ -84,6 +84,10 @@ void setupCamera() {
     delay(3000);
     ESP.restart();
   }
+
+  sensor_t* s = esp_camera_sensor_get();
+  s->set_hmirror(s, 0);   // horizontal mirror — toggle 0 or 1
+  s->set_vflip(s, 1);     // vertical flip — toggle 0 or 1
 }
 
 void setup() {
