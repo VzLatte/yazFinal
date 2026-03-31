@@ -130,6 +130,10 @@ void captureAndSendImage() {
       "--Esp32CamBoundary\r\n"
       "Content-Disposition: form-data; name=\"isOverlayRequired\"\r\n\r\n"
       "false\r\n";
+  const char* partEngine =
+      "--Esp32CamBoundary\r\n"
+      "Content-Disposition: form-data; name=\"OCREngine\"\r\n\r\n"
+      "2\r\n";
   const char* partFilePreamble =
       "--Esp32CamBoundary\r\n"
       "Content-Disposition: form-data; name=\"file\"; filename=\"image.jpg\"\r\n"
@@ -139,6 +143,7 @@ void captureAndSendImage() {
   const uint32_t contentLength =
       strlen(partApiKeyPreamble) + strlen(ocr_api_key) +
       strlen(partLanguage) + strlen(partOverlay) +
+      strlen(partEngine) +
       strlen(partFilePreamble) + fb->len + strlen(partFileTail);
 
   client.print("POST /parse/image HTTP/1.0\r\n");
@@ -156,6 +161,7 @@ void captureAndSendImage() {
   client.print(ocr_api_key);
   client.print(partLanguage);
   client.print(partOverlay);
+  client.print(partEngine);
   client.print(partFilePreamble);
   
   // Send image data (chunked to avoid watchdog resets and huge memory allocation)
